@@ -20,6 +20,7 @@ The action exports:
 - `AI_UI_EXPECTED_SCREENSHOT_PATH`
 - `AI_UI_PLANNER_GOAL`
 - `AI_UI_PLANNER_NOTE_PATH`: optional path to a short planner-generated markdown note that explains a safer narrowed route
+- `AI_UI_CHANGE_CONTEXT_PATH`: path supplied to the planner for the resolved comparison and release notes
 - `AI_UI_SIMULATOR_NAME`
 - `AI_UI_SIMULATOR_RUNTIME`
 - `AI_UI_SIMULATOR_UDID`
@@ -81,6 +82,10 @@ The scaffolded baseline runner supports these step actions:
 - `assertText`
 - `screenshot`
 
+The shell wrapper also accepts an app-owned `AI_UI_TEST_SELECTOR` for execution mode, defaulting to `<Target>/ScenarioRunnerUITests/testScenario`. Use a custom XCTest when the scenario needs assertions beyond the baseline JSON interpreter. The app owns mapping its reviewed scenario to that test, deterministic fixture state, and stronger assertions. Inspect mode ignores this override. Do not use the selector to skip declared scenario work.
+
+With explicit `base-ref`/`head-ref` action inputs, comparison preparation happens before either a provided scenario or a planner is selected. Both refs must exist and the checked-out HEAD must match the compared head. `release-notes-path` requires the explicit pair. `change-context.json` records the resolved commits, notes, changed files, diff hash, and truncation; `change.diff` preserves the complete diff. The generated planner sees a bounded diff excerpt. Its existing launch/screenshot fallback is rejected for explicit release comparisons unless there is a visibility/text assertion. All summaries disclose that the result covers the executed scenario only. An app-owned coverage report should identify which release changes passed, failed, remain blocked, or require another platform.
+
 ## Scenario Validation
 
 Every runtime scenario must have a nonblank `name` and a nonempty `steps` array. Unknown top-level fields, unknown step fields, and fields that do not apply to a step's action are rejected before the runner starts.
@@ -97,7 +102,7 @@ Supported step shapes are:
 
 `wait_seconds` must also be finite and nonnegative. Every provided `timeout` must be finite and greater than zero.
 
-The scaffolded OpenAI planner uses a separate strict wire schema whose launch environment is an array of `{ "key", "value" }` entries. The planner normalizes and validates that response before writing the provider-neutral runtime scenario, so app-side runners continue to receive `environment` as a string-to-string JSON object.
+The scaffolded provider adapters use a shared strict wire schema whose launch environment is an array of `{ "key", "value" }` entries. Provider-specific wire-schema adaptations retain local constraint validation. The planner normalizes and validates that response before writing the provider-neutral runtime scenario, so app-side runners continue to receive `environment` as a string-to-string JSON object.
 
 ## Suggested Summary Format
 
@@ -112,3 +117,5 @@ Write `summary.md` in flat markdown. Example:
 ```
 
 If `AI_UI_PLANNER_GOAL` is set, it is reasonable to include a dedicated `Planner Goal` section or let the public action append one after runner execution.
+
+Provider, model, effort, and compatible-endpoint settings are passed through `AI_UI_PLANNER_PROVIDER`, `AI_UI_PLANNER_MODEL`, `AI_UI_PLANNER_EFFORT`, and `AI_UI_PLANNER_BASE_URL`. Custom planners own these settings; the public executor imposes no provider dependency. See [planner configuration](planner-configuration.md).

@@ -6,12 +6,19 @@ ARTIFACTS_DIR="${ARTIFACTS_DIR:?ARTIFACTS_DIR is required}"
 PROVIDED_SCENARIO_PATH="${PROVIDED_SCENARIO_PATH:-}"
 PLANNER_COMMAND="${PLANNER_COMMAND:-}"
 PLANNER_GOAL="${PLANNER_GOAL:-}"
+export AI_UI_PLANNER_PROVIDER="${PLANNER_PROVIDER:-${AI_UI_PLANNER_PROVIDER:-}}"
+export AI_UI_PLANNER_MODEL="${PLANNER_MODEL:-${AI_UI_PLANNER_MODEL:-}}"
+export AI_UI_PLANNER_EFFORT="${PLANNER_EFFORT:-${AI_UI_PLANNER_EFFORT:-}}"
+export AI_UI_PLANNER_BASE_URL="${PLANNER_BASE_URL:-${AI_UI_PLANNER_BASE_URL:-}}"
 ACTION_ROOT="${ACTION_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 RUNNER_SCRIPT="${RUNNER_SCRIPT:-./scripts/run-ai-ui-scenario.sh}"
 SIMULATOR_NAME="${SIMULATOR_NAME:-}"
 SIMULATOR_RUNTIME="${SIMULATOR_RUNTIME:-26.2}"
 MAX_DURATION_SECONDS="${MAX_DURATION_SECONDS:-300}"
 AI_UI_CONTRACT_SCRIPT="${ACTION_ROOT}/scripts/ai_ui_contract.py"
+BASE_REF="${BASE_REF:-}"
+HEAD_REF="${HEAD_REF:-}"
+RELEASE_NOTES_PATH="${RELEASE_NOTES_PATH:-}"
 
 absolute_path() {
   python3 - "$1" <<'PY'
@@ -31,6 +38,7 @@ PLANNER_RESPONSE_TEXT_PATH="${ARTIFACTS_DIR}/planner-response.txt"
 PLANNER_RESPONSE_JSON_PATH="${ARTIFACTS_DIR}/planner-response.json"
 PLANNER_VALIDATION_ERROR_PATH="${ARTIFACTS_DIR}/planner-validation-error.txt"
 PLANNER_NOTE_PATH="${ARTIFACTS_DIR}/planner-note.md"
+CHANGE_CONTEXT_PATH="${ARTIFACTS_DIR}/change-context.json"
 WORKSPACE_ROOT="$(absolute_path "${AI_UI_WORKSPACE:-${GITHUB_WORKSPACE:-$PWD}}")"
 AI_UI_CONFIG_DIR="${WORKSPACE_ROOT}/.github/ai-ui"
 PLANNER_CONTEXT_PATH="${AI_UI_PLANNER_CONTEXT_PATH:-${AI_UI_CONFIG_DIR}/planner-context.md}"
@@ -43,6 +51,8 @@ fi
 
 mkdir -p "${ARTIFACTS_DIR}"
 rm -f \
+  "${CHANGE_CONTEXT_PATH}" \
+  "${ARTIFACTS_DIR}/change.diff" \
   "${SCENARIO_PATH}" \
   "${SUMMARY_PATH}" \
   "${PLANNER_SUMMARY_PATH}" \
@@ -133,6 +143,9 @@ write_planner_request() {
     echo "## iOS AI UI Planner Request"
     echo
     echo "- Planner command: ${PLANNER_COMMAND}"
+    echo "- Requested provider: ${AI_UI_PLANNER_PROVIDER:-planner default}"
+    echo "- Requested model: ${AI_UI_PLANNER_MODEL:-planner default}"
+    echo "- Requested effort: ${AI_UI_PLANNER_EFFORT:-planner default}"
     echo "- Workspace: ${WORKSPACE_ROOT}"
     echo "- Planner context: ${PLANNER_CONTEXT_PATH}"
     if [[ -n "${EXPECTED_SCREENSHOT_PATH:-}" ]]; then
@@ -289,6 +302,8 @@ cleanup() {
     write_failure_summary
   fi
 
+  python3 "${AI_UI_CONTRACT_SCRIPT}" append-change-summary \
+    --artifacts-dir "${ARTIFACTS_DIR}" --summary "${SUMMARY_PATH}"
   write_outputs
 }
 
@@ -299,17 +314,17 @@ validate_json() {
 }
 
 validate_accessibility_ids() {
-  local ui_tree_arg=()
+  local command=(
+    python3 "${AI_UI_CONTRACT_SCRIPT}" validate-generated-scenario
+    "$1"
+    --repo-root "${WORKSPACE_ROOT}"
+    --planner-context "${PLANNER_CONTEXT_PATH}"
+    --config-dir "${AI_UI_CONFIG_DIR}"
+  )
   if [[ -n "${BEFORE_PLANNING_UI_TREE_PATH:-}" ]]; then
-    ui_tree_arg=(--before-planning-ui-tree "${BEFORE_PLANNING_UI_TREE_PATH}")
+    command+=(--before-planning-ui-tree "${BEFORE_PLANNING_UI_TREE_PATH}")
   fi
-
-  python3 "${AI_UI_CONTRACT_SCRIPT}" validate-generated-scenario \
-    "$1" \
-    --repo-root "${WORKSPACE_ROOT}" \
-    --planner-context "${PLANNER_CONTEXT_PATH}" \
-    --config-dir "${AI_UI_CONFIG_DIR}" \
-    "${ui_tree_arg[@]}"
+  "${command[@]}"
 }
 
 run_live_inspection() {
@@ -445,6 +460,7 @@ run_planner() {
   write_planner_request
 
   set +e
+  AI_UI_CHANGE_CONTEXT_PATH="${CHANGE_CONTEXT_PATH}" \
   AI_UI_SCENARIO_OUTPUT_PATH="${SCENARIO_PATH}" \
   AI_UI_PLANNER_DRAFT_SCENARIO_PATH="${PLANNER_RESPONSE_JSON_PATH}" \
   AI_UI_PLANNER_GOAL="${PLANNER_GOAL:-}" \
@@ -494,16 +510,31 @@ main() {
     return 1
   fi
 
+  if ! python3 "${AI_UI_CONTRACT_SCRIPT}" prepare-change-context \
+    --repo-root "${WORKSPACE_ROOT}" --artifacts-dir "${ARTIFACTS_DIR}" \
+    --base-ref "${BASE_REF}" --head-ref "${HEAD_REF}" \
+    --release-notes-path "${RELEASE_NOTES_PATH}" --event-path "${GITHUB_EVENT_PATH:-}" \
+    2>"${PLANNER_VALIDATION_ERROR_PATH}"; then
+    FAILURE_NOTE="Change comparison failed; see planner-validation-error.txt."
+    return 1
+  fi
+  rm -f "${PLANNER_VALIDATION_ERROR_PATH}"
+
   if [[ -n "${PROVIDED_SCENARIO_PATH}" && -f "${PROVIDED_SCENARIO_PATH}" ]]; then
     resolved_provided_path="${PROVIDED_SCENARIO_PATH}"
   fi
 
   if [[ -n "${resolved_provided_path}" ]]; then
-    use_provided "${resolved_provided_path}"
-    return 0
+    use_provided "${resolved_provided_path}" || return 1
+  else
+    run_planner || return 1
   fi
-
-  run_planner
+  if ! python3 "${AI_UI_CONTRACT_SCRIPT}" validate-release-scenario "${SCENARIO_PATH}" \
+    --context "${CHANGE_CONTEXT_PATH}" 2>"${PLANNER_VALIDATION_ERROR_PATH}"; then
+    FAILURE_NOTE="Release scenario has insufficient assertions; see planner-validation-error.txt."
+    return 1
+  fi
+  rm -f "${PLANNER_VALIDATION_ERROR_PATH}"
 }
 
 if ! main; then
